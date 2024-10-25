@@ -16,6 +16,9 @@ from PIL import ImageQt as IQ
 from io import BytesIO
 import base64
 from PyQt5.QtWidgets import QLabel
+import re
+from PyQt5 import QtWidgets, QtCore
+import time
 class CustomTextEdit(QTextEdit):
     enter_pressed_signal = pyqtSignal()  # 自定义信号，用于传递 Enter 键按下的事件
 
@@ -32,6 +35,8 @@ class Window(QDialog):
     # 定义信号，用于更新成员列表和聊天记录
     update_member_list_signal = pyqtSignal(list)
     append_chat_signal = pyqtSignal(str)
+    create_download_button_signal = pyqtSignal(str)
+    
 
     def __init__(self, client_name):
         super().__init__()
@@ -148,14 +153,23 @@ class Window(QDialog):
         under_layout.addLayout(right_layout)
         # self.setLayout(right_layout)
         main_layout.addLayout(under_layout)
+
+        self.file_buttons_layout = QtWidgets.QVBoxLayout()  # 文件按钮布局
+        main_layout.addLayout(self.file_buttons_layout)  # 添加文件按钮布局
         self.setLayout(main_layout)
         self.setWindowTitle(f"飞机杯✈️交友群")
         self.resize(1200, 800)
         self.setMinimumSize(1200, 800)
 
+        # 启用拖拽文件
+        self.setAcceptDrops(True)  # 启用拖拽
+        self.show()  # 显示窗口
+
+        
         # 信号连接槽函数
         self.update_member_list_signal.connect(self.update_member_list)
         self.append_chat_signal.connect(self.append_chat)
+        self.create_download_button_signal.connect(self.create_download_button)
     def closeEvent(self, event):
         """ 在点击 × 时退出聊天 """
         if self.client_socket:
@@ -199,55 +213,108 @@ class Window(QDialog):
         return f"data:image/png;base64,{base64_image}",pixmap
 
 
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls():  # 如果拖入的是文件
+            event.accept()  # 接受拖拽
+        else:
+            event.ignore()  # 忽略拖拽
+
+    def dropEvent(self, event):
+        if event.mimeData().hasUrls():
+            file_path = event.mimeData().urls()[0].toLocalFile()  # 获取文件路径
+            self.entry.setText(file_path)  # 将文件路径设置到输入框中
+
+    def send_file(self, filepath):
+        self.client_socket.send("SEND_FILE".encode('utf8'))  # 告诉服务器要发送文件
+        filepath = filepath[8:]
+        pattern1 = r"[^/]*\."
+        index = filepath.find(".")
+        filename=re.search(pattern1, filepath).group(0) + filepath[index+1:]#用正则表达式从文件路径中提取文件名
+        self.client_socket.send(filename.encode())  # 发送文件名
+        with open(filepath, 'rb') as f:
+            bytes_read = f.read(1024)
+            while bytes_read:
+                self.client_socket.send(bytes_read)  # 发送文件内容
+                bytes_read = f.read(1024)
+        print(f"File {filepath} sent.")  # 打印文件发送成功的消息
+        time.sleep(1)
+        self.client_socket.send("SEND_FILE END".encode('utf8')) #告诉服务器文件发送完毕
+
+    def create_download_button(self, filename):
+        """为每个接收到的文件创建一个下载按钮"""
+        button = QtWidgets.QPushButton(f'Download {filename}', self)  # 创建下载按钮
+        button.clicked.connect(lambda: self.download_file(filename))  # 连接点击事件
+        self.file_buttons_layout.addWidget(button)  # 将按钮添加到布局
+        #self.chat_layout.addWidget(button)  # 将按钮添加到对话框
+
+    def download_file(self, filename):
+        """下载文件的逻辑"""
+        order = "RECEIVE_FILE"
+        print(f"Downloading {filename}")
+        self.client_socket.send(order.encode("utf8"))   #告诉服务器要下载文件
+        self.client_socket.send(filename.encode("utf8"))    #发送文件名
+        # filename = "D:\\" + filename    #默认将文件存储在D盘
+        # with open(filename, 'wb') as f:
+        #     while True:
+        #         data = self.client_socket.recv(1024)
+        #         print(data)
+        #         if data == "file end".encode("utf8"):
+        #             break
+        #         f.write(data)
+        # print(f"Download {filename}")
+
     def send(self):
         try:
             text = self.chatTextField.toPlainText()
             if text:
-                # 手动换行：假设每行最多40个字符
-                max_chars_per_line = 40
-                lines = [text[i:i + max_chars_per_line] for i in range(0, len(text), max_chars_per_line)]
-                wrapped_text = '\n'.join(lines)
-                # 创建消息部件
-                message_widget = QWidget()
-                message_layout = QHBoxLayout(message_widget)
-                # 消息文本
-                message_label = QLabel(wrapped_text)
-                message_label.setStyleSheet("""
-                    background-color: #DCF8C6;
-                    border-radius: 2px;
-                    padding: 5px 10px 5px 10px;
-                """)
-                font = QFont()
-                font.setPointSize(13)  # 设置字体大小
-                message_label.setFont(font)  # 应用字体
-                # 计算行数和高度
-                font_metrics = QFontMetrics(message_label.font())
-                line_height = font_metrics.lineSpacing()  # 每行的高度
-                line_count = len(lines)  # 计算行数
-                bubble_height = line_height * line_count + 20  # 设置气泡的高度，加上padding的高度  
-                # 设置固定的高度
-                message_label.setFixedHeight(bubble_height)
-                message_layout.addWidget(message_label)
-                # 头像
-                avatar_label = QLabel()
-                avatar_label.setPixmap(self.icons[self.client_name].scaled(50, 50, Qt.KeepAspectRatio, Qt.SmoothTransformation))
-                message_layout.addWidget(avatar_label)
-                message_layout.setAlignment(Qt.AlignRight)  
-                # 添加消息内容到聊天区域
-                self.chat_layout.addWidget(message_widget)
-                # 添加固定间隔的Spacer
-                spacer = QSpacerItem(0, 10, QSizePolicy.Minimum, QSizePolicy.Fixed)  # 10是间隔高度
-                self.chat_layout.addItem(spacer)
-                self.chat.verticalScrollBar().setValue(self.chat.verticalScrollBar().maximum())
-                # 发送消息到服务器
-                self.client_socket.send(text.encode())
-                self.chatTextField.setPlainText("")
-                # 确保聊天区域始终在最顶部
-                # self.chat.verticalScrollBar().setValue(0)
+                if text.endswith(('.txt', '.jpg', '.png','.pdf','.mp4','.docx','.xlsx')):  # 检查文件类型
+                    self.send_file(text)  # 发送文件
+                    self.chatTextField.setPlainText("")
+                else:
+                    # 手动换行：假设每行最多40个字符
+                    max_chars_per_line = 40
+                    lines = [text[i:i + max_chars_per_line] for i in range(0, len(text), max_chars_per_line)]
+                    wrapped_text = '\n'.join(lines)
+                    # 创建消息部件
+                    message_widget = QWidget()
+                    message_layout = QHBoxLayout(message_widget)
+                    # 消息文本
+                    message_label = QLabel(wrapped_text)
+                    message_label.setStyleSheet("""
+                        background-color: #DCF8C6;
+                        border-radius: 2px;
+                        padding: 5px 10px 5px 10px;
+                    """)
+                    font = QFont()
+                    font.setPointSize(13)  # 设置字体大小
+                    message_label.setFont(font)  # 应用字体
+                    # 计算行数和高度
+                    font_metrics = QFontMetrics(message_label.font())
+                    line_height = font_metrics.lineSpacing()  # 每行的高度
+                    line_count = len(lines)  # 计算行数
+                    bubble_height = line_height * line_count + 20  # 设置气泡的高度，加上padding的高度  
+                    # 设置固定的高度
+                    message_label.setFixedHeight(bubble_height)
+                    message_layout.addWidget(message_label)
+                    # 头像
+                    avatar_label = QLabel()
+                    avatar_label.setPixmap(self.icons[self.client_name].scaled(50, 50, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+                    message_layout.addWidget(avatar_label)
+                    message_layout.setAlignment(Qt.AlignRight)  
+                    # 添加消息内容到聊天区域
+                    self.chat_layout.addWidget(message_widget)
+                    # 添加固定间隔的Spacer
+                    spacer = QSpacerItem(0, 10, QSizePolicy.Minimum, QSizePolicy.Fixed)  # 10是间隔高度
+                    self.chat_layout.addItem(spacer)
+                    self.chat.verticalScrollBar().setValue(self.chat.verticalScrollBar().maximum())
+                    # 发送消息到服务器
+                    
+                    self.client_socket.send(text.encode())
+                    self.chatTextField.setPlainText("")
+                    # 确保聊天区域始终在最顶部
+                    # self.chat.verticalScrollBar().setValue(0)
         except Exception as e:
             print(f"Error occurred while sending message: {e}")
-
-
 
     def append_chat(self, message):
         """更新聊天内容"""
@@ -279,43 +346,44 @@ class Window(QDialog):
             message_layout.setAlignment(Qt.AlignCenter)  # 系统消息居中
         else:
             message_label = QLabel()
-            text=clean_message.split(":")[1]
-            max_chars_per_line = 40
-            lines = [text[i:i + max_chars_per_line] for i in range(0, len(text), max_chars_per_line)]
-            wrapped_text = '\n'.join(lines)
-            # 用户消息处理
-            if user in self.avatars.keys():
-                avatar_image = self.icons[user]
-                avatar_label = QLabel()
-                avatar_label.setPixmap(QPixmap(avatar_image).scaled(50, 50, Qt.KeepAspectRatio, Qt.SmoothTransformation))
-                message_layout.addWidget(avatar_label)
-                print(self.avatars)
-                print("ahiofhiasdpoifhasdp90vyhsa8ohvdpash8pfgo98aysp89fga&G*")
-            print(f"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa{clean_message}")
-            # 消息文本
-            message_label.setText(wrapped_text)  # 设置消息内容
-            message_label.setStyleSheet("""
-                background-color: #666666;
-                border-radius: 2px;
-                padding: 5px 10px 5px 10px; /* 上、右、下、左*/
-                max-width: 400px;  # 限制最大宽度
-            """)
-            font = QFont()
-            font.setPointSize(13)  # 设置字体大小
-            message_label.setFont(font)  # 应用字体
-            font_metrics = QFontMetrics(message_label.font())
-            line_height = font_metrics.lineSpacing()  # 每行的高度
-            line_count = len(lines)  # 计算行数
-            bubble_height = line_height * line_count + 20  # 设置气泡的高度，加上padding的高度  
-            # 设置固定的高度
-            message_label.setFixedHeight(bubble_height)
-            # message_layout.addWidget(message_label)
-            # message_label.setMaximumWidth(400)
-            # message_label.setWordWrap(True)
-            message_layout.addWidget(message_label)
+            if len(clean_message.split(":")) > 1:
+                text=clean_message.split(":")[1]
+                max_chars_per_line = 40
+                lines = [text[i:i + max_chars_per_line] for i in range(0, len(text), max_chars_per_line)]
+                wrapped_text = '\n'.join(lines)
+                # 用户消息处理
+                if user in self.avatars.keys():
+                    avatar_image = self.icons[user]
+                    avatar_label = QLabel()
+                    avatar_label.setPixmap(QPixmap(avatar_image).scaled(50, 50, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+                    message_layout.addWidget(avatar_label)
+                    print(self.avatars)
+                    print("ahiofhiasdpoifhasdp90vyhsa8ohvdpash8pfgo98aysp89fga&G*")
+                print(f"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa{clean_message}")
+                # 消息文本
+                message_label.setText(wrapped_text)  # 设置消息内容
+                message_label.setStyleSheet("""
+                    background-color: #666666;
+                    border-radius: 2px;
+                    padding: 5px 10px 5px 10px; /* 上、右、下、左*/
+                    max-width: 400px;  # 限制最大宽度
+                """)
+                font = QFont()
+                font.setPointSize(13)  # 设置字体大小
+                message_label.setFont(font)  # 应用字体
+                font_metrics = QFontMetrics(message_label.font())
+                line_height = font_metrics.lineSpacing()  # 每行的高度
+                line_count = len(lines)  # 计算行数
+                bubble_height = line_height * line_count + 20  # 设置气泡的高度，加上padding的高度  
+                # 设置固定的高度
+                message_label.setFixedHeight(bubble_height)
+                # message_layout.addWidget(message_label)
+                # message_label.setMaximumWidth(400)
+                # message_label.setWordWrap(True)
+                message_layout.addWidget(message_label)
 
-            # 设置对齐：用户消息左对齐
-            message_layout.setAlignment(Qt.AlignLeft)
+                # 设置对齐：用户消息左对齐
+                message_layout.setAlignment(Qt.AlignLeft)
         
         # 将消息内容添加到聊天区域
         self.chat_layout.addWidget(message_widget)
@@ -373,7 +441,25 @@ class ClientThread(Thread):
                     if decoded_message.startswith("USER_LIST"):
                         user_list = decoded_message[len("USER_LIST:"):].split(',')
                         self.window.update_member_list_signal.emit(user_list)
+                    elif decoded_message.startswith("FILE"):  # 检查消息是否是文件名
+                        filename = decoded_message.split(" ")[1]  # 提取文件名
+                        if decoded_message.split(" ")[2] == "0": 
+                            print("get file button")
+                            self.window.create_download_button_signal.emit(filename)  # 创建下载按钮
+                        else:
+                            filepath = "D:\\" + filename    #默认将文件存储在D盘
+                            with open(filepath, 'wb') as f:
+                                # data = self.window.client_socket.recv(1024)
+                                # f.write(data)
+                                while True:
+                                    data = self.window.client_socket.recv(1024)
+                                    if data == "file end".encode("utf8"):
+                                        break
+                                    f.write(data)
+                            print(f"Download {filepath}")
+                            self.window.append_chat_signal.emit(f"server@wind: downloaded {filename}")
                     else:
+                        print(f"rev {data}")
                         self.window.append_chat_signal.emit(decoded_message)
                 else:
                     break
