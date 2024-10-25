@@ -1,5 +1,8 @@
 import socket
 from threading import Thread
+import os
+import re
+import time
 
 clients = {}  # 存储已连接的客户端和对应的名称
 
@@ -18,15 +21,50 @@ class ClientThread(Thread):
         clients[self.client_socket] = self.client_name
         # self.broadcast(f"{self.client_name} has joined the chat.", self.client_socket)
         self.broadcast(f'server@wind:{self.client_name} has joined the chat.', self.client_socket,0)
-        # self.broadcast(f'<div style="color:gray; text-align:ceconter;">server@wind:{self.client_name} has joined the chat.</div>', self.client_socket,0)
+        # self.broadcast(f'<div style="color:gray; text-align:center;">server@wind:{self.client_name} has joined the chat.</div>', self.client_socket,0)
         self.broadcast_user_list()
         while True:
             try:
                 message = self.client_socket.recv(1024)
                 if message:
                     # 广播客户端消息，附加客户端名字
-                    self.broadcast(f"{self.client_name}: {message.decode('utf-8')}", self.client_socket,1)
-                    
+                    if message == "SEND_FILE".encode('utf8'):
+                        # 接收文件名
+                        filename = self.client_socket.recv(1024).decode()  # 接收文件名
+                        print(f'Receiving file: {filename}')
+                        
+                        # 将文件保存到服务器
+                        with open(os.path.basename(filename), 'wb') as f:
+                            # bytes_read = self.client_socket.recv(1024)
+                            # f.write(bytes_read)
+                            # n=0
+                            while True:
+                                bytes_read = self.client_socket.recv(1024)
+                                if bytes_read == "SEND_FILE END".encode('utf8') or not bytes_read:
+                                    break
+                                f.write(bytes_read)
+                        
+                        print(f'File {filename} received from {self.client_address}.')
+                        # for client in clients.keys():
+                        #     if client != self.client_socket:  # 不发送给发送文件的客户端
+                        #         client.sendall(f"FILE {filename}".encode())  # 发送文件名
+                        self.broadcast(f"FILE {filename} 0",self.client_socket,1)
+                        self.broadcast(f"server@wind:{clients[self.client_socket]} send a file '{filename}'",self.client_socket,0)
+                    elif message == "RECEIVE_FILE".encode('utf8'):
+                        filename = self.client_socket.recv(1024).decode()  # 接收文件名
+                        print(f'Sending file {filename} to {clients[self.client_socket]}.')
+                        self.client_socket.send(f"FILE {filename} 1".encode('utf8'))
+                        # 读取并发送文件
+                        with open(os.path.basename(filename), 'rb') as f:
+                            bytes_read = f.read(1024)
+                            while bytes_read:
+                                self.client_socket.send(bytes_read)
+                                bytes_read = f.read(1024)
+                        time.sleep(1)
+                        self.client_socket.send("file end".encode("utf8"))  # 发送结束标志
+                        print(f'File {filename} sent to {clients[self.client_socket]}.')
+                    else:
+                        self.broadcast(f"{self.client_name}: {message.decode('utf-8')}", self.client_socket,1)
                 else:
                     break
             except:
@@ -65,6 +103,7 @@ class ClientThread(Thread):
             client.close()
             # clients.pop(client)
             clients.pop(client, None)
+
     def broadcast_user_list(self):
         to_remove=[]
         """广播当前在线用户列表"""
